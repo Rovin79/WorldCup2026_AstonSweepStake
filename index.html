@@ -435,16 +435,20 @@ function calcLeaderboard() {
       }
     });
 
-    // KO points (simplified - based on entered results)
-    const koMults = {r32:5,r16:8,qf:12,sf:18,final:25,winner:10};
-    Object.entries(STATE.koScores || {}).forEach(([key, sc]) => {
-      if (!sc.h && !sc.a) return;
-      const [round, t1, , t2] = key.split('_');
-      const h = parseInt(sc.h), a = parseInt(sc.a);
-      if (isNaN(h) || isNaN(a)) return;
-      const mult = koMults[round] || 5;
-      if (myTeams.includes(t1) && h > a) koPoints += mult;
-      if (myTeams.includes(t2) && a > h) koPoints += mult;
+    // KO points
+    const KO_PTS_LB = { r32:5, r16:8, qf:12, sf:18, final:25 };
+    const koRounds = [{r:'r32',c:16},{r:'r16',c:8},{r:'qf',c:4},{r:'sf',c:2},{r:'final',c:1}];
+    koRounds.forEach(({r, c}) => {
+      const pts = KO_PTS_LB[r] || 0;
+      for (let i = 1; i <= c; i++) {
+        const sc = STATE.koScores[r+'_'+i] || {};
+        if (!sc.saved) continue;
+        const h = parseInt(sc.h), a = parseInt(sc.a);
+        if (isNaN(h) || isNaN(a)) continue;
+        const winner = h > a ? sc.t1 : sc.t2;
+        if (winner && myTeams.includes(winner)) koPoints += pts;
+        if (r === 'final' && winner && myTeams.includes(winner)) koPoints += 10;
+      }
     });
 
     return { name, gsPoints, koPoints, total: gsPoints + koPoints, teams: myTeams.length };
@@ -575,53 +579,174 @@ function editScore(key) {
   renderFixtures();
 }
 
-// KO bracket
-const KO_ROUNDS = [
-  { id:'r32', label:'Round of 32', slots: 16 },
-  { id:'r16', label:'Round of 16', slots: 8 },
-  { id:'qf', label:'Quarter-finals', slots: 4 },
-  { id:'sf', label:'Semi-finals', slots: 2 },
-  { id:'final', label:'Final', slots: 1 },
+// ============================================================
+// KNOCKOUT BRACKET
+// ============================================================
+const R32_MATCHUPS = [
+  {t1:'Germany', t2:'Paraguay'},
+  {t1:'France', t2:'Sweden'},
+  {t1:'South Africa', t2:'Canada'},
+  {t1:'Netherlands', t2:'Morocco'},
+  {t1:'Portugal', t2:'Croatia'},
+  {t1:'Spain', t2:'Austria'},
+  {t1:'United States', t2:'Bosnia & Herz.'},
+  {t1:'Belgium', t2:'Senegal'},
+  {t1:'Brazil', t2:'Japan'},
+  {t1:'Ivory Coast', t2:'Norway'},
+  {t1:'Mexico', t2:'Ecuador'},
+  {t1:'England', t2:'DR Congo'},
+  {t1:'Argentina', t2:'Cape Verde'},
+  {t1:'Australia', t2:'Egypt'},
+  {t1:'Switzerland', t2:'Algeria'},
+  {t1:'Colombia', t2:'Ghana'},
 ];
 
+const KO_STRUCTURE = [
+  { round:'r32', label:'Round of 32', count:16 },
+  { round:'r16', label:'Round of 16', count:8 },
+  { round:'qf',  label:'Quarter-finals', count:4 },
+  { round:'sf',  label:'Semi-finals', count:2 },
+  { round:'final', label:'Final', count:1 },
+];
+
+const KO_PTS = { r32:5, r16:8, qf:12, sf:18, final:25 };
+const WINNER_BONUS = 10;
+
+function getKOWinner(round, matchNum) {
+  const key = `${round}_${matchNum}`;
+  const sc = STATE.koScores[key] || {};
+  if (!sc.saved) return null;
+  const h = parseInt(sc.h), a = parseInt(sc.a);
+  if (isNaN(h) || isNaN(a)) return null;
+  if (h === a) return sc.penWinner || null;
+  return h > a ? (sc.t1 || '') : (sc.t2 || '');
+}
+
+function propagateWinners() {
+  const pairs = [
+    {from:'r32', to:'r16', count:8},
+    {from:'r16', to:'qf', count:4},
+    {from:'qf', to:'sf', count:2},
+    {from:'sf', to:'final', count:1},
+  ];
+  pairs.forEach(({from, to, count}) => {
+    for (let i = 1; i <= count; i++) {
+      const w1 = getKOWinner(from, i*2-1);
+      const w2 = getKOWinner(from, i*2);
+      const key = `${to}_${i}`;
+      if (!STATE.koScores[key]) STATE.koScores[key] = {};
+      if (w1 !== null) STATE.koScores[key].t1 = w1;
+      if (w2 !== null) STATE.koScores[key].t2 = w2;
+    }
+  });
+}
+
+function getTeamFlag(name) {
+  const t = TEAMS.find(t => t.name === name);
+  return t ? t.flag : '🏳';
+}
+
 function renderBracket() {
+  propagateWinners();
   const container = document.getElementById('ko-rounds');
-  container.innerHTML = KO_ROUNDS.map(r => {
+  container.innerHTML = KO_STRUCTURE.map(({ round, label, count }) => {
     const matches = [];
-    for (let i = 0; i < r.slots; i++) {
-      const key = `${r.id}_m${i+1}`;
+    for (let i = 1; i <= count; i++) {
+      const key = `${round}_${i}`;
       const sc = STATE.koScores[key] || {};
+      const defaultT1 = round === 'r32' ? R32_MATCHUPS[i-1].t1 : 'TBD';
+      const defaultT2 = round === 'r32' ? R32_MATCHUPS[i-1].t2 : 'TBD';
+      const t1 = sc.t1 || defaultT1;
+      const t2 = sc.t2 || defaultT2;
+      const saved = sc.saved || false;
+      const h = sc.h ?? '', a = sc.a ?? '';
+      const winner = saved ? getKOWinner(round, i) : null;
+      const owner1 = getOwner(t1);
+      const owner2 = getOwner(t2);
+      const isLevel = h !== '' && a !== '' && parseInt(h) === parseInt(a) && !sc.penWinner;
+      const penWinner = sc.penWinner || null;
+
       matches.push(`<div class="ko-match">
-        <div class="ko-team">
-          <span style="color:var(--muted);font-size:0.75rem;margin-right:4px">${i*2+1}</span>
-          <span style="flex:1;font-size:0.82rem" contenteditable="true" id="t1_${key}" onblur="saveKOTeam('${key}','t1',this.textContent)">${sc.t1||'TBD'}</span>
-          <input class="ko-score-in" type="number" min="0" max="20" value="${sc.h||''}" placeholder="–" onchange="saveKOScore('${key}','h',this.value)">
+        <div class="ko-team ${winner === t1 ? 'winner' : ''}">
+          <span style="font-size:0.9rem">${getTeamFlag(t1)}</span>
+          <span style="flex:1;font-size:0.8rem;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${t1}">${t1}</span>
+          ${owner1 ? `<span style="font-size:0.6rem;color:${owner1.color};font-weight:600">${owner1.name}</span>` : ''}
+          ${saved
+            ? `<span style="font-family:'Bebas Neue';font-size:1rem;color:${winner===t1?'var(--gold)':'var(--muted)'};min-width:18px;text-align:center">${h}${penWinner===t1?' (P)':''}</span>`
+            : `<input class="ko-score-in" id="in_${key}_h" type="number" min="0" max="20" value="${h}" placeholder="–" oninput="updateKOField('${key}','h',this.value)">`
+          }
         </div>
-        <div class="ko-team">
-          <span style="color:var(--muted);font-size:0.75rem;margin-right:4px">${i*2+2}</span>
-          <span style="flex:1;font-size:0.82rem" contenteditable="true" id="t2_${key}" onblur="saveKOTeam('${key}','t2',this.textContent)">${sc.t2||'TBD'}</span>
-          <input class="ko-score-in" type="number" min="0" max="20" value="${sc.a||''}" placeholder="–" onchange="saveKOScore('${key}','a',this.value)">
+        <div class="ko-team ${winner === t2 ? 'winner' : ''}">
+          <span style="font-size:0.9rem">${getTeamFlag(t2)}</span>
+          <span style="flex:1;font-size:0.8rem;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${t2}">${t2}</span>
+          ${owner2 ? `<span style="font-size:0.6rem;color:${owner2.color};font-weight:600">${owner2.name}</span>` : ''}
+          ${saved
+            ? `<span style="font-family:'Bebas Neue';font-size:1rem;color:${winner===t2?'var(--gold)':'var(--muted)'};min-width:18px;text-align:center">${a}${penWinner===t2?' (P)':''}</span>`
+            : `<input class="ko-score-in" id="in_${key}_a" type="number" min="0" max="20" value="${a}" placeholder="–" oninput="updateKOField('${key}','a',this.value)">`
+          }
+        </div>
+        ${(!saved && isLevel) ? `
+        <div style="padding:6px 8px;border-top:1px solid var(--border);background:rgba(232,183,74,0.08)">
+          <div style="font-size:0.65rem;color:var(--gold);margin-bottom:4px">Scores level — who won on penalties?</div>
+          <div style="display:flex;gap:6px">
+            <button class="edit-btn" style="flex:1" onclick="setPenWinner('${key}',this.dataset.t,'${t1.replace(/'/g,"&#39;")}','${t2.replace(/'/g,"&#39;")}')" data-t="${t1.replace(/'/g,"&#39;")}">${t1}</button>
+            <button class="edit-btn" style="flex:1" onclick="setPenWinner('${key}',this.dataset.t,'${t1.replace(/'/g,"&#39;")}','${t2.replace(/'/g,"&#39;")}')" data-t="${t2.replace(/'/g,"&#39;")}">${t2}</button>
+          </div>
+        </div>` : ''}
+        <div style="padding:4px 8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:6px;background:rgba(0,0,0,0.15)">
+          <span style="font-size:0.65rem;color:var(--muted);flex:1">${label} ${i}</span>
+          ${saved
+            ? `<button class="edit-btn" onclick="editKOScore('${key}')">Edit</button>`
+            : (!isLevel ? `<button class="save-btn" onclick="saveKOScore('${key}',this.dataset.t1,this.dataset.t2)" data-t1="${t1.replace(/'/g,"&#39;")}" data-t2="${t2.replace(/'/g,"&#39;")}">Save</button>` : '')
+          }
         </div>
       </div>`);
     }
-    return `<div class="ko-round">
-      <div class="ko-round-title">${r.label}</div>
-      ${matches.join('')}
-    </div>`;
+    return `<div class="ko-round"><div class="ko-round-title">${label}</div>${matches.join('')}</div>`;
   }).join('');
 }
 
-function saveKOScore(key, side, val) {
+function updateKOField(key, side, val) {
   if (!STATE.koScores[key]) STATE.koScores[key] = {};
-  STATE.koScores[key][side === 'h' ? 'h' : 'a'] = val;
-  saveState(STATE);
-  renderLeaderboard();
+  STATE.koScores[key][side] = val;
+  renderBracket();
+  const input = document.getElementById(`in_${key}_${side}`);
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
 }
 
-function saveKOTeam(key, side, val) {
+function saveKOScore(key, t1, t2) {
   if (!STATE.koScores[key]) STATE.koScores[key] = {};
-  STATE.koScores[key][side] = val.trim();
+  STATE.koScores[key].t1 = t1;
+  STATE.koScores[key].t2 = t2;
+  const sc = STATE.koScores[key];
+  const h = sc.h ?? '', a = sc.a ?? '';
+  if (h === '' || a === '') { showToast('Enter both scores first!'); return; }
+  STATE.koScores[key] = { ...sc, saved: true };
   saveState(STATE);
+  propagateWinners();
+  saveState(STATE);
+  renderBracket();
+  renderLeaderboard();
+  showToast('Result saved! 🏆');
+}
+
+function setPenWinner(key, penWinner, t1, t2) {
+  if (!STATE.koScores[key]) STATE.koScores[key] = {};
+  STATE.koScores[key].t1 = t1;
+  STATE.koScores[key].t2 = t2;
+  STATE.koScores[key].penWinner = penWinner;
+  STATE.koScores[key].saved = true;
+  saveState(STATE);
+  propagateWinners();
+  saveState(STATE);
+  renderBracket();
+  renderLeaderboard();
+  showToast(penWinner + ' win on penalties! 🏆');
+}
+
+function editKOScore(key) {
+  if (STATE.koScores[key]) { STATE.koScores[key].saved = false; saveState(STATE); }
+  renderBracket();
 }
 
 function renderLeaderboard() {
